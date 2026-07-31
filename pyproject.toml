@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cc-token-farm"
 version = "1.0.0"
-description = "Generate real token usage traffic through CC Switch local proxy — model-aware, price-aware CLI."
+description = "CC Switch token usage generator: real Anthropic/OpenAI traffic via local proxy, model pricing, cost estimate & hard budget — no SQLite forgery."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -14,13 +14,20 @@ authors = [
 ]
 keywords = [
   "cc-switch",
-  "token",
-  "usage",
-  "proxy",
+  "token-usage",
+  "usage-dashboard",
+  "local-proxy",
+  "anthropic",
   "claude",
-  "codex",
   "openai",
+  "codex",
+  "llm",
   "cli",
+  "cost-estimate",
+  "model-pricing",
+  "prompt-cache",
+  "load-test",
+  "token-farm",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -34,6 +41,8 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Topic :: Internet :: Proxy Servers",
+  "Topic :: Software Development :: Testing",
   "Topic :: Utilities",
 ]
 dependencies = []
@@ -45,6 +54,8 @@ dev = ["pytest>=7.0"]
 Homepage = "https://github.com/tytsxai/cc-token-farm"
 Repository = "https://github.com/tytsxai/cc-token-farm"
 Issues = "https://github.com/tytsxai/cc-token-farm/issues"
+Changelog = "https://github.com/tytsxai/cc-token-farm/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/tytsxai/cc-token-farm#readme"
 
 [project.scripts]
 cc-token-farm = "cc_token_farm.cli:main"

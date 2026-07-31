@@ -2,6 +2,7 @@
 
 ## 1.0.0 — 2026-07-31
 
+### Added
 - Initial open-source release.
 - CLI subcommands: `run`, `check`, `doctor`, `models`, `estimate`, `sync-pricing`, `status`.
 - Anthropic Messages + OpenAI Chat Completions via CC Switch local proxy.
@@ -11,3 +12,9 @@
 - Progress file + resume counters.
 - Profiles: `smoke`, `daily-2b`.
 - Pure Python 3.10+, no third-party runtime dependencies.
+- Optional `scripts/oauth_forwarder.py`: clean OAuth Bearer headers when CC Switch talks to Anthropic.
+
+### Docs
+- SEO/GEO-oriented README, `llms.txt`, `docs/FAQ.md`.
+- Richer `pyproject.toml` metadata (keywords, classifiers, project URLs).
+- CONTRIBUTING / SECURITY notes for real-traffic boundaries and cost safety.

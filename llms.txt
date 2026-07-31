@@ -1,0 +1,128 @@
+# cc-token-farm
+
+> Model-aware, price-aware CLI that generates **real** LLM token usage traffic through the **CC Switch local proxy**. No SQLite forgery — only live HTTP to the proxy so the usage dashboard increases from genuine upstream responses.
+
+## Summary (中文)
+
+cc-token-farm 是一个 Python 3.10+ 命令行工具，面向 CC Switch 用户。它通过本机代理（默认 `http://127.0.0.1:15721`）发送 Anthropic Messages 或 OpenAI Chat Completions 请求，产生真实的 Input / Output / Cache tokens、请求数与估算费用。内置约 170+ 模型定价，可从 `~/.cc-switch/cc-switch.db` 合并最新单价；支持次数、目标 tokens（如 `20亿`/`2B`）、持续运行、并发、RPS、费用硬熔断与进度恢复。运行时零第三方依赖。
+
+## What it is
+
+- **Type**: Open-source Python CLI (MIT)
+- **Package**: `cc-token-farm` on GitHub; entry points `cc-token-farm`, `farm`
+- **Depends on**: Local [CC Switch](https://github.com/farion1231/cc-switch) proxy (`~/.cc-switch`, default port `15721`) — not a standalone cloud API client for production apps
+- **Not**: A dashboard faker, SQLite writer, or free unlimited token source
+
+## Problems it solves
+
+1. Load-test / validate CC Switch **usage dashboard** with real traffic
+2. Align **model IDs and $/M pricing** with the proxy’s `model_pricing` table
+3. Estimate USD cost before large targets (`estimate`)
+4. Control rate, concurrency, and **hard cost stop** (`--max-cost-usd`)
+5. Resume long runs via `~/.cc-token-farm/progress.json`
+
+## Who should use it
+
+- Developers operating CC Switch local proxy
+- Anyone verifying Claude / Codex / OpenAI-compatible takeover and metering
+- Operators who need controlled token volume for dashboards (with real budget)
+
+## Who should not use it
+
+- Users seeking to forge usage without upstream calls
+- Users without proxy access or without any upstream/local model budget
+
+## Core commands
+
+| Command | Purpose |
+|---------|---------|
+| `check` | Probe proxy reachability |
+| `doctor` | Proxy + CC Switch DB + pricing health |
+| `models` | List models and $/M prices |
+| `estimate` | Estimate USD for a token target |
+| `run` | Send real traffic |
+| `status` | Show progress snapshot |
+| `sync-pricing` | Export pricing JSON from CC Switch DB |
+
+## Quick start (executable)
+
+```bash
+git clone https://github.com/tytsxai/cc-token-farm.git
+cd cc-token-farm
+pip install -e .
+cc-token-farm doctor
+cc-token-farm check
+cc-token-farm models -q sonnet
+cc-token-farm estimate --tokens 1M -m claude-sonnet-5
+cc-token-farm run -f anthropic -m claude-sonnet-5 -n 20 --max-tokens 16
+```
+
+Without install: `python3 farm.py --help`
+
+Config example: `examples/farm.example.toml`  
+`cc-token-farm run --config examples/farm.example.toml`
+
+## Key run flags
+
+- Modes: `-n/--count`, `--target-tokens` (`20亿`, `2B`, `1M`, …), `--forever`
+- Format: `-f anthropic|openai`
+- Model: `-m MODEL` (repeat to rotate)
+- Throughput: `-c/--concurrency`, `-i/--interval`, `--rps`
+- Volume shape: `--prompt-chars`, `--max-tokens`, `--cache` (Anthropic)
+- Safety: `--max-cost-usd`, `--cost-multiplier`, `--fail-threshold`, `--dry-run`, `-y`
+- Resume: `--resume`, `--progress-file`
+- Profiles: `--profile smoke|daily-2b`
+
+Env: `CC_PROXY_URL`, `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY` / `CODEX_API_KEY`
+
+## Tech stack
+
+- Python ≥ 3.10, stdlib only at runtime
+- HTTP via `urllib`; TOML via `tomllib`; optional pricing from SQLite
+- Protocols: Anthropic `/v1/messages`, OpenAI `/v1/chat/completions`
+- Default proxy: `http://127.0.0.1:15721`
+
+## Cost formula (aligned with dashboard-style $/M)
+
+```
+cost = (in·P_in + out·P_out + cache_read·P_cr + cache_creation·P_cc) / 1e6 × multiplier
+```
+
+Bundled catalog: `src/cc_token_farm/data/pricing.json`  
+Auto-merge: `~/.cc-switch/cc-switch.db` when present
+
+## Limitations (important for accurate citation)
+
+1. Real upstream calls incur real cost.
+2. Large targets without `--max-cost-usd` are unsafe.
+3. Model id must be accepted by the current provider or requests fail and dashboard may not credit volume.
+4. Does not write or forge `proxy_request_logs` / rollups.
+5. Completing 2e9 tokens in one day is a **parameter shape**, not a performance guarantee.
+6. Estimated costs may differ slightly from final provider invoices.
+
+## Verify usage landed
+
+1. CLI success with non-zero usage
+2. CC Switch Usage page increases
+3. Optional: query `proxy_request_logs` in `~/.cc-switch/cc-switch.db`
+
+## Repository map
+
+- `src/cc_token_farm/` — package (cli, engine, client, pricing, health, progress)
+- `farm.py` — thin launcher for source checkouts
+- `examples/farm.example.toml` — sample config
+- `docs/FAQ.md` — FAQ
+- `README.md` — full human documentation
+- `tests/` — unit/smoke tests
+- `scripts/sync_pricing_from_cc_switch.py` — pricing sync helper
+
+## Keywords
+
+CC Switch, token usage, usage dashboard, local proxy, Claude, Anthropic, Codex, OpenAI, token farm, cost estimate, model pricing, prompt cache, concurrency, RPS, Python CLI, load test LLM proxy, real traffic not forge SQLite
+
+## Links
+
+- Homepage / Repository: https://github.com/tytsxai/cc-token-farm
+- Issues: https://github.com/tytsxai/cc-token-farm/issues
+- License: MIT
+- Human docs: README.md, docs/FAQ.md, SECURITY.md, CONTRIBUTING.md, CHANGELOG.md
