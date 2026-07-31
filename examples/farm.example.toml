@@ -1,0 +1,33 @@
+# cc-token-farm example config
+# Usage: cc-token-farm run --config examples/farm.example.toml
+
+[farm]
+proxy = "http://127.0.0.1:15721"
+format = "anthropic"
+model = "claude-sonnet-5"
+# models = ["claude-sonnet-5", "claude-haiku-4-5-20251001"]  # rotate
+
+# mode (pick one): count / forever / target_tokens
+count = 20
+# forever = true
+# target_tokens = 1000000
+
+concurrency = 2
+interval = 0.3
+jitter = 0.1
+max_tokens = 16
+prompt = "Reply with exactly one word: ok"
+prompt_chars = 500
+cache = false
+stream = false
+timeout = 120
+
+# hard budget (USD) — highly recommended for large targets
+# max_cost_usd = 5.0
+
+# match CC Switch provider cost_multiplier if set
+cost_multiplier = 1.0
+
+# rps = 5
+fail_threshold = 20
+# progress_file = "~/.cc-token-farm/progress.json"

@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[dev]"
+      - name: Test
+        run: pytest -q
+      - name: CLI smoke
+        run: |
+          cc-token-farm --version
+          cc-token-farm models --cheapest --limit 3
+          cc-token-farm estimate --tokens 1M -m claude-sonnet-5
+          cc-token-farm run --dry-run -n 1 -m claude-sonnet-5 -y -q

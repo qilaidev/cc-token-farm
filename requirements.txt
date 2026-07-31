@@ -1,0 +1,5 @@
+# Runtime: none (Python stdlib only, >=3.10)
+# Install the package itself:
+#   pip install -e .
+# Dev:
+#   pip install -e ".[dev]"
