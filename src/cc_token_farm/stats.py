@@ -24,6 +24,10 @@ class Stats:
     by_model: dict[str, dict[str, float | int]] = field(default_factory=dict)
     consecutive_failures: int = 0
     last_error: str = ""
+    # Tokens/cost already counted before this process started (resume baseline).
+    # Rate / ETA use only progress made after baseline so resume does not explode tok/s.
+    baseline_tokens: int = 0
+    baseline_cost_usd: float = 0.0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def add(self, r: RequestResult, price: ModelPrice | None = None, multiplier: float = 1.0) -> None:
@@ -90,6 +94,10 @@ class Stats:
         return max(0.001, time.time() - self.started_at)
 
     def tokens_per_sec(self) -> float:
+        # Prefer this-run progress so --resume does not report absurd tok/s.
+        run_tokens = max(0, self.total_tokens - self.baseline_tokens)
+        if run_tokens > 0:
+            return run_tokens / self.elapsed
         return self.total_tokens / self.elapsed
 
     def snapshot(self) -> dict:

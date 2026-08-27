@@ -69,6 +69,14 @@ cc-token-farm run -f anthropic -m claude-sonnet-5 -n 5 --max-tokens 16
 cc-token-farm estimate --tokens 20亿 -m claude-sonnet-5
 ```
 
+补充门禁（1.0.1+）：
+
+- 未知模型定价时 `--max-cost-usd` **无效**（按 $0）→ 默认拒绝该组合  
+- `--stream` 与 `--max-cost-usd` 互斥  
+- `--forever` / 超大目标 / `daily-2b` 无预算时会拦截或要求确认  
+
+长任务与生产清单见 [PRODUCTION.md](PRODUCTION.md)。
+
 ---
 
 ## 支持哪些 API 格式？Protocols
@@ -89,6 +97,20 @@ cc-token-farm estimate --tokens 20亿 -m claude-sonnet-5
 3. `cc-token-farm sync-pricing` 可导出 JSON  
 
 费用为 **$/M × tokens × cost_multiplier** 风格估算，最终以代理与上游账单为准。
+
+---
+
+## 刷完官方 Claude 报 502 / 路由忘关怎么办？
+
+官方账号日常应直连，刷量只开**本地代理端口**，不要 Live 接管 CLI。
+
+```bash
+cc-token-farm gateway status   # 看是否仍被指到 127.0.0.1:15721
+cc-token-farm gateway off      # 关代理 + 恢复官方 CLI
+# 然后重开 Claude 窗口
+```
+
+推荐刷量命令带 `--restore-after`，跑完自动 `gateway off`。详见 [GATEWAY.md](GATEWAY.md)。
 
 ---
 

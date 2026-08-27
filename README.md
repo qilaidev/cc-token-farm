@@ -250,6 +250,23 @@ cc-token-farm sync-pricing -o src/cc_token_farm/data/pricing.json
 
 ---
 
+## 官方账号：刷完务必关路由 | Gateway (recommended)
+
+官方 Claude 账号日常应**直连**，不要长期 Live 接管。  
+`cc-token-farm` 只需要本地代理端口，**不必**改 `~/.claude/settings.json`。
+
+```bash
+cc-token-farm gateway on          # 开代理、禁止 Live 接管、保持 CLI 官方
+cc-token-farm run -m claude-opus-5 --target-tokens 1M --max-cost-usd 50 --yes --restore-after
+cc-token-farm gateway status      # farm_ready + official_ok
+# 未加 --restore-after 时手动：
+cc-token-farm gateway off         # 关代理 + 恢复官方 CLI
+```
+
+完整说明：[docs/GATEWAY.md](docs/GATEWAY.md)
+
+---
+
 ## 高用量策略（含「每天 20 亿」）| High-volume notes
 
 `20亿 = 2e9 tokens` **可以**作为 `--target-tokens` 参数，但是：
@@ -307,6 +324,7 @@ sqlite3 ~/.cc-switch/cc-switch.db \
 | 资源 | 说明 |
 |------|------|
 | [docs/FAQ.md](docs/FAQ.md) | 常见问题（中英） |
+| [docs/PRODUCTION.md](docs/PRODUCTION.md) | 生产就绪清单、长任务、恢复与回滚 |
 | [llms.txt](llms.txt) | 给 AI 搜索 / LLM 抓取的项目摘要 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本记录 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 |
@@ -321,6 +339,8 @@ pip install -e ".[dev]"
 pytest -q
 python -m cc_token_farm doctor
 ```
+
+生产/长任务上线前请走 [docs/PRODUCTION.md](docs/PRODUCTION.md) 检查清单。
 
 ---
 

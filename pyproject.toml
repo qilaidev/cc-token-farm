@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cc-token-farm"
-version = "1.0.0"
+version = "1.1.0"
 description = "CC Switch token usage generator: real Anthropic/OpenAI traffic via local proxy, model pricing, cost estimate & hard budget — no SQLite forgery."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -45,7 +45,10 @@ classifiers = [
   "Topic :: Software Development :: Testing",
   "Topic :: Utilities",
 ]
-dependencies = []
+dependencies = [
+  # tomllib is stdlib on 3.11+; keep 3.10 TOML configs working without breaking zero-dep on 3.11+
+  "tomli>=2.0.0; python_version < '3.11'",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]

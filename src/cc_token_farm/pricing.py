@@ -22,6 +22,11 @@ class ModelPrice:
     format: str = "auto"  # anthropic | openai | auto
     family: str = ""
 
+    @property
+    def is_unknown(self) -> bool:
+        """True when catalog returned a placeholder for an uncatalogued model id."""
+        return self.display_name.endswith("(unknown pricing)")
+
     def cost_usd(
         self,
         input_tokens: int = 0,

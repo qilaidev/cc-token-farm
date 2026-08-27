@@ -11,8 +11,20 @@ from typing import Any
 
 from cc_token_farm import __version__
 from cc_token_farm.client import check_proxy
-from cc_token_farm.config import FarmConfig, config_from_mapping, load_toml_or_json, merge_env
+from cc_token_farm.config import (
+    FarmConfig,
+    config_from_mapping,
+    load_toml_or_json,
+    merge_env,
+    validate_config,
+)
 from cc_token_farm.engine import FarmEngine
+from cc_token_farm.gateway import (
+    format_status,
+    gateway_off,
+    gateway_on,
+    status as gateway_status,
+)
 from cc_token_farm.health import doctor
 from cc_token_farm.pricing import PricingCatalog
 from cc_token_farm.progress import ProgressStore
@@ -37,7 +49,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     ok, msg = check_proxy(args.proxy, timeout=args.timeout)
     print(("✓ " if ok else "✗ ") + msg)
     if not ok:
-        print("Start CC Switch → enable local proxy + app takeover.")
+        print("Start proxy for farming: cc-token-farm gateway on")
+        print("(Do NOT enable Claude Live takeover for official accounts.)")
         return 2
     return 0
 
@@ -166,10 +179,110 @@ def _parse_headers(items: list[str] | None) -> dict[str, str]:
     return out
 
 
+def _safety_gate(cfg: FarmConfig, cat: PricingCatalog, *, yes: bool) -> int | None:
+    """Block or warn on cost-safety footguns. Return exit code to abort, else None."""
+    models = cfg.effective_models()
+    prices = [cat.require(m) for m in models]
+    unknown = [p for p in prices if p.is_unknown]
+    freeish = [
+        p
+        for p in prices
+        if not p.is_unknown and p.input == 0.0 and p.output == 0.0
+    ]
+
+    if unknown:
+        names = ", ".join(p.model_id for p in unknown)
+        print(
+            f"[warn] unknown pricing for: {names}\n"
+            f"  Cost estimate and --max-cost-usd will under-count (treated as $0).\n"
+            f"  Prefer: cc-token-farm models -q <id>  or  sync-pricing from CC Switch DB.",
+            file=sys.stderr,
+        )
+        if cfg.max_cost_usd is not None and not cfg.dry_run:
+            print(
+                "[error] --max-cost-usd cannot protect you when model pricing is unknown.\n"
+                "  Fix model id / pricing, or remove --max-cost-usd and accept unlimited spend risk "
+                "only with -y after conscious review.",
+                file=sys.stderr,
+            )
+            if not yes:
+                return 2
+            print(
+                "[warn] proceeding with unknown pricing AND -y; budget hard-stop is ineffective.",
+                file=sys.stderr,
+            )
+
+    if freeish and not cfg.quiet:
+        names = ", ".join(p.model_id for p in freeish)
+        print(
+            f"[warn] zero-priced model(s): {names} — budget stop may never trip if rates stay 0.",
+            file=sys.stderr,
+        )
+
+    if cfg.stream and cfg.max_cost_usd is not None and not cfg.dry_run:
+        print(
+            "[error] --stream with --max-cost-usd is unsafe: stream responses often omit usage, "
+            "so the hard budget may not trip.\n"
+            "  Drop --stream (recommended) or drop --max-cost-usd.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # High-risk open-ended / huge runs without a hard budget.
+    needs_budget = False
+    reason = ""
+    if cfg.forever and cfg.max_cost_usd is None:
+        needs_budget = True
+        reason = "--forever without --max-cost-usd"
+    elif cfg.target_tokens and cfg.target_tokens >= 10_000_000 and cfg.max_cost_usd is None:
+        needs_budget = True
+        reason = f"--target-tokens {cfg.target_tokens:,} without --max-cost-usd"
+
+    if needs_budget and not cfg.dry_run:
+        print(
+            f"[warn] {reason} can incur unbounded real spend.",
+            file=sys.stderr,
+        )
+        if not yes and cfg.confirm_high_cost:
+            if sys.stdin.isatty():
+                print("  Continue without a hard budget? [y/N] ", end="", flush=True)
+                ans = sys.stdin.readline().strip().lower()
+                if ans not in {"y", "yes"}:
+                    print(
+                        "Aborted. Re-run with --max-cost-usd <budget> (recommended) or -y.",
+                        file=sys.stderr,
+                    )
+                    return 130
+            else:
+                print(
+                    "[error] non-interactive run refused: set --max-cost-usd or pass -y "
+                    "to acknowledge unbounded spend risk.",
+                    file=sys.stderr,
+                )
+                return 2
+        elif not yes:
+            # confirm_high_cost already False via -y path handled above; keep explicit
+            pass
+        else:
+            print(
+                "[warn] proceeding without --max-cost-usd (-y). You are on the hook for spend.",
+                file=sys.stderr,
+            )
+
+    return None
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = FarmConfig()
     if args.config:
-        cfg = config_from_mapping(load_toml_or_json(Path(args.config)))
+        try:
+            cfg = config_from_mapping(load_toml_or_json(Path(args.config)))
+        except Exception as e:  # noqa: BLE001
+            print(f"[error] failed to load config {args.config}: {e}", file=sys.stderr)
+            return 2
+
+    # Env fills defaults first; CLI flags always win over env.
+    cfg = merge_env(cfg)
 
     # CLI overrides
     if args.proxy:
@@ -193,7 +306,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         cfg.count = None
         cfg.target_tokens = None
     if args.target_tokens:
-        cfg.target_tokens = parse_token_amount(args.target_tokens)
+        try:
+            cfg.target_tokens = parse_token_amount(args.target_tokens)
+        except ValueError as e:
+            print(f"[error] invalid --target-tokens: {e}", file=sys.stderr)
+            return 2
         cfg.forever = False
         cfg.count = None
     if args.concurrency is not None:
@@ -219,7 +336,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.header:
         cfg.headers.update(_parse_headers(args.header))
     if args.max_cost_usd is not None:
-        cfg.max_cost_usd = parse_money(args.max_cost_usd)
+        try:
+            cfg.max_cost_usd = parse_money(args.max_cost_usd)
+        except ValueError as e:
+            print(f"[error] invalid --max-cost-usd: {e}", file=sys.stderr)
+            return 2
     if args.cost_multiplier is not None:
         cfg.cost_multiplier = args.cost_multiplier
     if args.dry_run:
@@ -243,6 +364,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not cfg.forever and cfg.target_tokens is None and cfg.count is None:
         cfg.count = 10
 
+    # Ensure api_key after format may still be empty if format flips later
     cat = _catalog(args)
     price = cat.require(cfg.primary_model())
     # explicit -f wins; else config file; else infer from model pricing family
@@ -251,15 +373,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     elif not args.config and price.format in {"anthropic", "openai"}:
         cfg.format = price.format
 
+    # Re-apply api_key env after format is final (does not clobber explicit key/proxy).
     cfg = merge_env(cfg)
 
     # profile presets
     if args.profile == "smoke":
         cfg.count = cfg.count or 3
+        cfg.forever = False
+        cfg.target_tokens = None
         cfg.max_tokens = min(cfg.max_tokens, 16)
         cfg.concurrency = 1
     elif args.profile == "daily-2b":
         cfg.target_tokens = cfg.target_tokens or parse_token_amount("20亿")
+        cfg.forever = False
+        cfg.count = None
         cfg.prompt_chars = cfg.prompt_chars or 8000
         cfg.max_tokens = min(cfg.max_tokens, 16)
         cfg.concurrency = max(cfg.concurrency, 8)
@@ -267,10 +394,26 @@ def cmd_run(args: argparse.Namespace) -> int:
         cfg.cache = True if cfg.format == "anthropic" else cfg.cache
         if cfg.max_cost_usd is None:
             print(
-                "[warn] profile daily-2b without --max-cost-usd is dangerous; "
-                "set a hard budget.",
+                "[error] profile daily-2b requires --max-cost-usd <budget> "
+                "(real spend at multi-billion token scale).",
                 file=sys.stderr,
             )
+            if not args.yes:
+                return 2
+            print(
+                "[warn] daily-2b without budget forced via -y; unbounded spend risk accepted.",
+                file=sys.stderr,
+            )
+
+    errors = validate_config(cfg)
+    if errors:
+        for err in errors:
+            print(f"[error] config: {err}", file=sys.stderr)
+        return 2
+
+    gate = _safety_gate(cfg, cat, yes=bool(args.yes))
+    if gate is not None:
+        return gate
 
     stop = threading.Event()
 
@@ -281,8 +424,43 @@ def cmd_run(args: argparse.Namespace) -> int:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _handle)
 
+    restore_after = bool(getattr(args, "restore_after", False))
     engine = FarmEngine(cfg, cat, stop_event=stop)
-    return engine.run()
+    try:
+        return engine.run()
+    finally:
+        if restore_after:
+            print("\n[gateway] --restore-after: turning farm gateway OFF…", flush=True)
+            for line in gateway_off(db_path=Path(args.db) if getattr(args, "db", None) else None):
+                print(f"  {line}", flush=True)
+            print(format_status(gateway_status()), flush=True)
+
+
+def cmd_gateway(args: argparse.Namespace) -> int:
+    db = Path(args.db) if getattr(args, "db", None) else None
+    action = args.gateway_action
+    if action == "status":
+        print(format_status(gateway_status(db_path=db)))
+        return 0
+    if action == "on":
+        print("[gateway on] open proxy for farm, keep Claude CLI official")
+        for line in gateway_on(db_path=db, restart=not args.no_restart):
+            print(f"  {line}")
+        print()
+        print(format_status(gateway_status(db_path=db)))
+        st = gateway_status(db_path=db)
+        return 0 if st.farm_ready else 1
+    if action == "off":
+        print("[gateway off] stop proxy + restore Claude CLI official")
+        for line in gateway_off(db_path=db, restart=not args.no_restart):
+            print(f"  {line}")
+        print()
+        print(format_status(gateway_status(db_path=db)))
+        st = gateway_status(db_path=db)
+        # success if CLI not routed; port may take a moment
+        return 0 if not st.claude_routed else 1
+    print(f"[error] unknown gateway action: {action}", file=sys.stderr)
+    return 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -292,13 +470,17 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  cc-token-farm gateway status
+  cc-token-farm gateway on
+  cc-token-farm run -m claude-opus-5 --target-tokens 1M --max-cost-usd 50 --yes --restore-after
+  cc-token-farm gateway off
   cc-token-farm check
   cc-token-farm doctor
   cc-token-farm models --cheapest
   cc-token-farm estimate --tokens 20亿 -m claude-sonnet-5 -m deepseek-v4-flash
   cc-token-farm run -m claude-sonnet-5 -n 20
   cc-token-farm run -m claude-sonnet-5 --target-tokens 1M --max-cost-usd 5 -c 4
-  cc-token-farm run --profile daily-2b -m claude-sonnet-5 --max-cost-usd 100 --yes
+  cc-token-farm run --profile daily-2b -m claude-sonnet-5 --max-cost-usd 100 --yes --restore-after
 """,
     )
     p.add_argument("-V", "--version", action="version", version=f"cc-token-farm {__version__}")
@@ -387,7 +569,29 @@ Examples:
         default=None,
         help="Preset: smoke (3 req) | daily-2b (2e9 tokens shape)",
     )
+    sp.add_argument(
+        "--restore-after",
+        action="store_true",
+        help="After run ends (success/fail/interrupt): gateway off — restore official Claude CLI",
+    )
     sp.set_defaults(func=cmd_run)
+
+    # gateway — farm proxy without hijacking official Claude CLI
+    sp = sub.add_parser(
+        "gateway",
+        help="Farm proxy on/off/status (keeps official Claude CLI off the route)",
+    )
+    sp.add_argument(
+        "gateway_action",
+        choices=("on", "off", "status"),
+        help="on=open proxy (no live takeover); off=close + restore; status=inspect",
+    )
+    sp.add_argument(
+        "--no-restart",
+        action="store_true",
+        help="Only write config; do not restart CC Switch app",
+    )
+    sp.set_defaults(func=cmd_gateway)
 
     return p
 

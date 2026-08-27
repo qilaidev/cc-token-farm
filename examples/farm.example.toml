@@ -22,7 +22,7 @@ cache = false
 stream = false
 timeout = 120
 
-# hard budget (USD) — highly recommended for large targets
+# hard budget (USD) — required for large targets / forever / daily-2b in production
 # max_cost_usd = 5.0
 
 # match CC Switch provider cost_multiplier if set

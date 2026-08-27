@@ -72,9 +72,16 @@ class FarmEngine:
             status="running",
         )
 
+        self._stop_reason = ""  # budget | fail_threshold | target | interrupt | proxy
+
         if cfg.resume:
             prev = self.store.load()
-            if prev and prev.status in {"running", "stopped"}:
+            if prev is None and self.progress_path.exists():
+                print(
+                    f"[warn] --resume: progress file unreadable or corrupt: {self.progress_path}",
+                    file=sys.stderr,
+                )
+            elif prev and prev.status in {"running", "stopped"}:
                 self.stats.input_tokens = prev.input_tokens
                 self.stats.output_tokens = prev.output_tokens
                 self.stats.cache_read_tokens = prev.cache_read_tokens
@@ -83,9 +90,18 @@ class FarmEngine:
                 self.stats.total = prev.total
                 self.stats.success = prev.success
                 self.stats.failed = prev.failed
+                # Baseline so tok/s and ETA use only this-run progress.
+                self.stats.baseline_tokens = self.stats.total_tokens
+                self.stats.baseline_cost_usd = self.stats.cost_usd
                 self.state = prev
                 self.state.status = "running"
                 self.session_id = prev.session_id or self.session_id
+            elif prev and prev.status not in {"running", "stopped"}:
+                print(
+                    f"[warn] --resume: previous status={prev.status!r}; "
+                    f"starting a new session (use a different --progress-file to keep).",
+                    file=sys.stderr,
+                )
 
     def _next_seq(self) -> int:
         with self._seq_lock:
@@ -175,11 +191,19 @@ class FarmEngine:
         self.state.cost_usd = snap["cost_usd"]
         if status:
             self.state.status = status
+        if self._stop_reason:
+            self.state.note = self._stop_reason
+        if self.stats.last_error:
+            self.state.extra = {
+                **(self.state.extra or {}),
+                "last_error": self.stats.last_error,
+                "consecutive_failures": self.stats.consecutive_failures,
+            }
         try:
             self.store.save(self.state)
         except Exception as e:  # noqa: BLE001
-            if self.cfg.verbose:
-                print(f"[warn] progress save failed: {e}", file=sys.stderr)
+            # Always surface persist failures: long runs rely on progress for resume.
+            print(f"[warn] progress save failed: {e}", file=sys.stderr)
 
     def estimate_banner(self) -> str:
         models = self.cfg.effective_models()
@@ -216,9 +240,31 @@ class FarmEngine:
         lines.append(f"  pricing_source={self.catalog.source}")
         return "\n".join(lines)
 
+    def _budget_batch_size(self, concurrency: int) -> int:
+        """Shrink in-flight batch near max_cost to limit overshoot."""
+        if self.cfg.max_cost_usd is None or self.stats.total == 0:
+            return concurrency
+        remaining = self.cfg.max_cost_usd - self.stats.cost_usd
+        if remaining <= 0:
+            return 0
+        # Average cost per completed request this session (incl. resume totals).
+        per_req = self.stats.cost_usd / max(1, self.stats.total)
+        if per_req <= 0:
+            return concurrency
+        # Keep headroom for ~1 request; clamp to [1, concurrency].
+        safe = max(1, int(remaining / per_req))
+        return min(concurrency, safe)
+
     def run(self) -> int:
         if not self.cfg.quiet:
             print(self.estimate_banner())
+
+        if self.cfg.stream and not self.cfg.quiet:
+            print(
+                "[warn] --stream: usage tokens/cost are often missing from stream bodies; "
+                "token counters and --max-cost-usd may under-count. Prefer non-stream for budgets.",
+                file=sys.stderr,
+            )
 
         if not self.cfg.dry_run:
             ok, msg = check_proxy(self.cfg.proxy, timeout=min(5.0, self.cfg.timeout))
@@ -229,6 +275,7 @@ class FarmEngine:
                     f"({'Claude' if self.cfg.format == 'anthropic' else 'Codex'}).",
                     file=sys.stderr,
                 )
+                self._stop_reason = "proxy_unreachable"
                 self._persist("failed")
                 return 2
             if not self.cfg.quiet:
@@ -256,6 +303,7 @@ class FarmEngine:
                 ans = sys.stdin.readline().strip().lower()
                 if ans not in {"y", "yes"}:
                     print("Aborted.")
+                    self._stop_reason = "user_abort"
                     self._persist("stopped")
                     return 130
 
@@ -281,6 +329,18 @@ class FarmEngine:
                         if remain <= 0:
                             break
                         batch = min(concurrency, remain)
+
+                    # Near budget: reduce in-flight requests to limit overshoot.
+                    budget_batch = self._budget_batch_size(concurrency)
+                    if budget_batch == 0:
+                        self._stop_reason = "max_cost_usd"
+                        if not self.cfg.quiet:
+                            print(
+                                f"[stop] max cost reached: {human_usd(self.stats.cost_usd)}"
+                            )
+                        self.stop.set()
+                        break
+                    batch = min(batch, budget_batch)
 
                     futures = [pool.submit(self._one) for _ in range(batch)]
                     for fut in as_completed(futures):
@@ -327,12 +387,14 @@ class FarmEngine:
                                 print(
                                     f"[stop] max cost reached: {human_usd(self.stats.cost_usd)}"
                                 )
+                            self._stop_reason = "max_cost_usd"
                             self.stop.set()
                             break
                         if (
                             self.cfg.target_tokens is not None
                             and self.stats.total_tokens >= self.cfg.target_tokens
                         ):
+                            self._stop_reason = "target_tokens"
                             self.stop.set()
                             break
                         if self.stats.consecutive_failures >= self.cfg.fail_threshold:
@@ -341,6 +403,7 @@ class FarmEngine:
                                 f"last={self.stats.last_error}",
                                 file=sys.stderr,
                             )
+                            self._stop_reason = "fail_threshold"
                             self.stop.set()
                             break
 
@@ -365,30 +428,43 @@ class FarmEngine:
 
         except KeyboardInterrupt:
             self.stop.set()
+            self._stop_reason = self._stop_reason or "interrupt"
             if not self.cfg.quiet:
                 print("\n[interrupt] stopping…")
 
         # final status
-        if self.stats.consecutive_failures >= self.cfg.fail_threshold and self.stats.success == 0:
+        if self._stop_reason == "max_cost_usd":
+            # Budget hit is a controlled stop, not a crash.
+            status = "completed" if self.stats.success > 0 or self.cfg.dry_run else "stopped"
+            code = 0 if self.stats.success > 0 or self.cfg.dry_run else 1
+        elif self._stop_reason == "fail_threshold" and self.stats.success == 0:
+            status = "failed"
+            code = 1
+        elif self.stats.consecutive_failures >= self.cfg.fail_threshold and self.stats.success == 0:
             status = "failed"
             code = 1
         elif self.stop.is_set() and (
             (self.cfg.target_tokens and self.stats.total_tokens < self.cfg.target_tokens)
             or (self.cfg.count and done < (self.cfg.count or 0))
+            or self.cfg.forever
         ):
             status = "stopped"
             code = 130 if self.stats.success == 0 else 0
+            self._stop_reason = self._stop_reason or "stopped"
         else:
             status = "completed"
             code = 0 if self.stats.success > 0 or self.cfg.dry_run else 1
+            if not self._stop_reason:
+                self._stop_reason = "completed"
 
         self._persist(status)
 
         if not self.cfg.quiet:
             print("─" * 64)
             print(self.stats.summary_line())
+            reason = f" reason={self._stop_reason}" if self._stop_reason else ""
             print(
-                f"status={status} elapsed={self.stats.elapsed:.1f}s "
+                f"status={status}{reason} elapsed={self.stats.elapsed:.1f}s "
                 f"progress={self.progress_path}"
             )
             if self.stats.by_model:
